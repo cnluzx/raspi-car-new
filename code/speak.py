@@ -10,4 +10,6 @@ tts_script_path = os.path.join(current_dir, "tts.py")
 
 subprocess.Popen([sys.executable, tts_script_path, "I am your assistant"])
 subprocess.Popen([sys.executable, tts_script_path, "nihao"])
+
+
 time.sleep(3)
