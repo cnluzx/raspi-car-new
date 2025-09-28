@@ -12,7 +12,7 @@ class SerialCommunication:
             baudrate: 波特率，默认115200
             timeout: 超时时间(秒)，默认1
         """
-        self.port = "ttyUSB0"  # 默认串口号
+        self.port = "/dev/ttyUSB0"  # 默认串口号
         self.baudrate = 115200
         self.timeout = 1
         self.serial = None

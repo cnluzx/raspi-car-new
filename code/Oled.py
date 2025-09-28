@@ -1,5 +1,6 @@
-from Variable import *
-
+from Variable import text_event
+from Variable import running_flag
+import time
 """
 ###oled模块
 
@@ -41,7 +42,7 @@ class Oled:
     def threading_text(self):
         global display_text
         print("oled显示线程已启动...")
-        while running_thread_event.is_set():
+        while running_flag.is_set():
             if text_event.is_set():
                 print("text_event ok")
                 current_text = display_text.copy()
@@ -60,14 +61,12 @@ class Oled:
 
 if __name__ == '__main__':
     oled = Oled()
-    running_thread_event.set()
-
+    running_flag.set()
     # 先启动线程，再触发事件
     oled.threading_start()
 
     # 等待一小段时间确保线程已启动
     time.sleep(0.1)
-
     # 保持主线程运行，避免守护线程被终止
     try:
         while True:
@@ -75,5 +74,5 @@ if __name__ == '__main__':
             oled.update_display("detect--succcessfully!", "shape:rec", "point:12", "ok")
             time.sleep(1)
     except KeyboardInterrupt:
-        running_thread_event.clear()
+        running_flag.clear()
         print("程序退出")
