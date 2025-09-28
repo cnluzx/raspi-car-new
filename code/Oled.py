@@ -1,4 +1,4 @@
-from extent import *
+from Variable import *
 
 """
 ###oled模块
