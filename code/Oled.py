@@ -1,6 +1,7 @@
 from Variable import text_event
 from Variable import running_flag
 import time
+import threading
 """
 ###oled模块
 
@@ -49,8 +50,10 @@ class Oled:
                 self.show_text(*current_text)
                 text_event.clear()
             time.sleep(1)
-
-    def update_display(t1=None, t2=None, t3=None, t4=None):
+    def threading_start(self):
+        self.threading = threading.Thread(target=self.threading_text, daemon=True)
+        self.threading.start()
+    def update_display(self,t1=None, t2=None, t3=None, t4=None):
         """更新显示内容的公共方法（线程安全）"""
         display_text[0] = t1
         display_text[1] = t2
