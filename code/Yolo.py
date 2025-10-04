@@ -18,7 +18,7 @@ cap.set(3, 640)  # 宽
 cap.set(4, 480)  # 高
 
 # 加载 YOLOv8n 模型
-model = YOLO("1989.pt")  #
+model = YOLO("../model/1989.pt")  #
 
 print("🎬 实时视频流检测开始，按 'q' 退出，按 's' 保存当前画面")
 
