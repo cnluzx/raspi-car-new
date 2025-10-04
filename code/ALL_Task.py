@@ -9,7 +9,8 @@ from threading import Event, Thread
 import platform
 import signal
 import sys
-from collections import Counter  # 新增：用于统计类别计数
+from collections import Counter
+import pygame  # 新增：用于语音播报
 
 # 条件导入 RPi.GPIO（仅 RPi/Linux）
 RPI_GPIO_AVAILABLE = False
@@ -26,6 +27,7 @@ data_queue = queue.Queue(maxsize=50)
 id_event = Event()
 detection_event = Event()
 text_event = Event()
+cast_event = Event()  # 新增：语音播报事件
 id_data = None
 display_text = [None] * 4
 
@@ -294,9 +296,50 @@ class SerialCommunication:
     def is_open(self):
         return self.serial is not None and self.serial.is_open
 
+class Boardcast:
+    def __init__(self):
+        pygame.init()
+        pygame.mixer.init()
+        self.current_place = ""
+        self.current_name = ""
+
+    def _play_sound(self, place, name):
+        """通用的播放声音方法"""
+        print(f"尝试播放: {name}")
+        sound_path = f"../sound/{place}/{name}.mp3"
+        if not os.path.exists(sound_path):
+            print(f"错误: 文件不存在 - {sound_path}")
+            return
+        try:
+            pygame.mixer.music.load(sound_path)
+            pygame.mixer.music.play()
+            print(f"开始播放 {name}")
+            while pygame.mixer.music.get_busy():
+                pygame.time.Clock().tick(10)  # 降低 CPU 使用率
+            print(f"播放完成 {name}")
+        except Exception as e:
+            print(f"播放声音失败: {e}")
+
+    def threading_sound(self):
+        print("语音播报线程已启动...")
+        while running_flag.is_set():
+            if cast_event.is_set():
+                place = self.current_place
+                name = self.current_name
+                self._play_sound(place, name)
+                cast_event.clear()
+            time.sleep(0.1)
+        print("语音播报线程已停止")
+
+    def update_sound(self, place, name):
+        self.current_place = place
+        self.current_name = name
+        cast_event.set()
+
 class Seri:
-    def __init__(self, serial_comm):
+    def __init__(self, serial_comm, boardcast):
         self.serial_comm = serial_comm
+        self.boardcast = boardcast  # 新增：语音播报实例
         self.current_data = None
         self.current_step = "idle"
         self.debounce_interval = 0.07
@@ -384,6 +427,7 @@ class Seri:
                         if mapped_id:
                             print(f"ID 处理: 匹配到 {mapped_id}")
                             oled_ins.update_display(f"id:{mapped_id}")
+                            self.boardcast.update_sound("point", mapped_id)  # 新增：播报 ID
                         else:
                             print(f"ID 处理: 未识别的 ID: {id_data}")
                             oled_ins.update_display("未知 ID")
@@ -403,6 +447,7 @@ class Seri:
         start_thread("put_queue_stream", self.put_queue_stream)
         start_thread("read_queue_stream", self.read_queue_stream)
         start_thread("id_stream", self.id_stream)
+        start_thread("cast", self.boardcast.threading_sound)  # 新增：启动语音播报线程
         if self.serial_comm and self.serial_comm.is_open():
             self.serial_comm.send_data("1|0|0")
             print("测试：已发送开始信号 '1|0|0'")
@@ -412,16 +457,15 @@ class RobotController:
         self.pan = Pan()
         self.serial_comm = SerialCommunication(baudrate=115200)
         self.oled = Oled()
-        self.seri = Seri(self.serial_comm)
+        self.boardcast = Boardcast()  # 新增：语音播报实例
+        self.seri = Seri(self.serial_comm, self.boardcast)  # 修改：传入 boardcast
         self.oled.threading_start()
-        # 初始化摄像头
         self.cap = cv2.VideoCapture(1)
         if not self.cap.isOpened():
             print("❌ 无法找到可用摄像头，请检查设备或权限")
             exit()
         self.cap.set(3, 640)
         self.cap.set(4, 480)
-        # 初始化 YOLO 模型
         model_path = "../model/1989.pt"
         if not os.path.exists(model_path):
             print(f"❌ 模型文件 {model_path} 不存在")
@@ -446,12 +490,14 @@ class RobotController:
         classes = results[0].boxes.cls.tolist()
         class_names = [self.model.names[int(cls)] for cls in classes]
         print(f"[YOLO] 检测到类别: {', '.join(class_names) if class_names else '无'}")
-        # 保存图片
+        # 播报检测到的类别（顺序播放）
+        for name in class_names:
+            self.boardcast.update_sound("shape", name)  # 新增：播报 YOLO 检测类别
         image_filename = os.path.join(save_folder, f"image_{cv2.getTickCount()}.jpg")
         cv2.imwrite(image_filename, annotated_frame)
         save_count += 1
         print(f"✅ 保存画面为 {image_filename} ({save_count}/{max_saves})")
-        time.sleep(0.5)  # 暂停 0.5 秒，确保图片内容有差异
+        time.sleep(0.5)
         return save_count, class_names
 
     def reprocess_saved_images(self):
@@ -473,9 +519,10 @@ class RobotController:
             classes = results[0].boxes.cls.tolist()
             class_names = [self.model.names[int(cls)] for cls in classes]
             print(f"图片 {image_file} 识别到的类别: {', '.join(class_names) if class_names else '无'}")
-            # 更新 OLED 显示
+            # 播报重新检测的类别
+            for name in class_names:
+                self.boardcast.update_sound("shape", name)  # 新增：播报重新检测类别
             self.oled.update_display(f"Image {i+1}", f"Classes: {', '.join(class_names) if class_names else 'None'}")
-            # 保存检测结果
             output_path = os.path.join(output_folder, f"detected_{image_file}")
             cv2.imwrite(output_path, annotated_frame)
             print(f"✅ 保存检测结果为 {output_path}")
@@ -489,45 +536,38 @@ class RobotController:
         class_counter = Counter(all_classes)
         stats_str = f"{side} 侧检测统计: {dict(class_counter)}"
         print(f"[Stats] {stats_str}")
-        # 更新 OLED 显示统计（简化显示前两个类别或总计）
-        stats_display = f"{side} Total: {len(all_classes)} objs"
-        self.oled.update_display(stats_display, f"Classes: {dict(list(class_counter.items())[:2])}")  # 显示前两个类别
+        # 播报统计结果（示例：播报总计）
+        self.boardcast.update_sound("stats", f"{side.lower()}_stats")  # 新增：播报统计
+        self.oled.update_display(f"{side} Total: {len(all_classes)} objs", f"Classes: {dict(list(class_counter.items())[:2])}")
 
     def execute_detection_sequence(self):
         """执行检测序列：左转连续拍3张（每张立即检测显示） → 左统计输出 → 右转连续拍3张（每张立即检测显示） → 右统计输出 → 归中（不拍照） → 重新检测"""
         print("[Detection] 开始检测序列...")
         save_count = 0
         max_saves = 6
-        left_classes = []  # 新增：收集左边所有检测类别
-        right_classes = []  # 新增：收集右边所有检测类别
-        # 1. 云台左转 + 连续捕获 3 张，每张立即检测
+        left_classes = []
+        right_classes = []
         self.pan.pan_left()
         print("[Detection] 云台左转 - 连续捕获 3 张图片")
         for shot in range(1, 4):
             print(f"[Detection] 左转 - 第 {shot} 张")
             save_count, classes = self.perform_yolo_detection(save_count, max_saves)
             self.oled.update_display(f"Left {shot}", f"Classes: {', '.join(classes) if classes else 'None'}")
-            left_classes.extend(classes)  # 收集类别
-        # 左边检测完成后统计输出
+            left_classes.extend(classes)
         self.print_detection_stats("Left", left_classes)
-        # 2. 云台右转 + 连续捕获 3 张，每张立即检测
         self.pan.pan_right()
         print("[Detection] 云台右转 - 连续捕获 3 张图片")
         for shot in range(1, 4):
             print(f"[Detection] 右转 - 第 {shot} 张")
             save_count, classes = self.perform_yolo_detection(save_count, max_saves)
             self.oled.update_display(f"Right {shot}", f"Classes: {', '.join(classes) if classes else 'None'}")
-            right_classes.extend(classes)  # 收集类别
-        # 右边检测完成后统计输出
+            right_classes.extend(classes)
         self.print_detection_stats("Right", right_classes)
-        # 3. 云台居中（不拍照）
         self.pan.pan_center()
         print("[Detection] 云台居中")
         self.oled.update_display("Center", "No detection")
-        # 4. 重新检测保存的图片
         print("[Detection] 重新检测保存的图片")
         self.reprocess_saved_images()
-        # 5. 发送停止命令
         self.seri.detect_finished()
         print("[Detection] 序列完成")
 
@@ -548,11 +588,12 @@ class RobotController:
         self.serial_comm.disconnect()
         self.cap.release()
         cv2.destroyAllWindows()
+        pygame.mixer.quit()  # 新增：清理 pygame 资源
         print("[RobotController] 资源已清理")
 
 if __name__ == "__main__":
     global oled_ins
-    oled_ins = Oled()  # 全局 OLED 实例供 Seri 使用
+    oled_ins = Oled()
     controller = RobotController()
     try:
         controller.start()
