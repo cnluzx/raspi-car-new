@@ -68,6 +68,16 @@ def start_pigpiod():
         return False
 
 
+def get_category_type(class_id):
+    """根据类别ID返回播报类型"""
+    class_id = int(class_id)
+    if 1 <= class_id <= 10:
+        return "person", class_id  # 人物播报
+    elif 11 <= class_id <= 20:
+        return "weapon", class_id - 10  # 刀具播报
+    return None, None
+
+
 signal.signal(signal.SIGINT, signal_handler)
 
 # 条件导入 RPi.GPIO
@@ -130,7 +140,22 @@ class Oled:
                 print(f"[Oled] 硬件显示失败: {e}")
         else:
             print(f"[Oled] 模拟显示: {t1}, {t2}, {t3}, {t4}, status: running, time: {time.strftime('%H:%M:%S')}")
-        time.sleep(0.5)
+        time.sleep(3)
+
+    def turn_off_display(self):
+        """息屏函数，清空OLED显示屏"""
+        print("[Oled] 息屏函数被调用")
+        if self._real_hardware:
+            try:
+                with canvas(self.device) as draw:
+                    # 用黑色填充整个屏幕，实现息屏效果
+                    draw.rectangle(self.device.bounding_box, outline="black", fill="black")
+                print("[Oled] 硬件息屏成功")
+            except Exception as e:
+                print(f"[Oled] 硬件息屏失败: {e}")
+        else:
+            print("[Oled] 模拟息屏")
+        time.sleep(0.1)
 
     def threading_text(self):
         print("[Oled] 显示线程已启动...")
@@ -139,6 +164,7 @@ class Oled:
                 current_text = display_text.copy()
                 print(f"[Oled] Thread processing display_text: {current_text}")
                 self.show_text(*current_text)
+                self.turn_off_display()
                 text_event.clear()
             time.sleep(0.1)
         print("[Oled] 显示线程已停止")
@@ -315,9 +341,10 @@ class SerialCommunication:
 
 
 class Seri:
-    def __init__(self, serial_comm, boardcast, pan_yolo):
+    def __init__(self, serial_comm, boardcast, pan_yolo, oled):
         self.serial_comm = serial_comm
         self.boardcast = boardcast
+        self.oled = oled
         self.pan_yolo = pan_yolo  # 引用 PanYolo 实例
         self.current_data = None
         self.current_step = "idle"
@@ -401,6 +428,7 @@ class Seri:
                         if mapped_id in {'1', '2', '3', '4', '5', '6', '7', '8', '9'}:
                             print(f"[Seri] ID 处理: 匹配到 {mapped_id}")
                             self.boardcast.update_sound("point", mapped_id)
+                            self.oled.update_display("point", mapped_id)
                             id_data = None
                             id_event.clear()
                             continue
@@ -609,8 +637,7 @@ class PanYolo:
             classes = results[0].boxes.cls.tolist() if results[0].boxes else []
             class_names = [self.model.names[int(cls)] for cls in classes] if classes else []
             print(f"[PanYolo] 检测到类别: {', '.join(class_names) if class_names else '无'}")
-            if class_names:
-                self.boardcast.update_sound("shape", class_names[0])
+
         except Exception as e:
             print(f"[PanYolo] YOLO 检测失败: {e}")
             class_names = []
@@ -620,54 +647,6 @@ class PanYolo:
         print(f"[PanYolo] ✅ 保存画面为 {image_filename} ({save_count}/{max_saves})")
         time.sleep(0.2)
         return save_count, class_names
-
-    def reprocess_saved_images(self):
-        image_files = [f for f in os.listdir(save_folder) if f.endswith(('.jpg', '.jpeg', '.png'))]
-        if len(image_files) == 0:
-            print("[PanYolo] ❌ saved_images 文件夹中没有图片")
-            return
-        full_paths = [(os.path.join(save_folder, f), os.path.getmtime(os.path.join(save_folder, f))) for f in
-                      image_files]
-        full_paths.sort(key=lambda x: x[1], reverse=True)
-        latest_images = full_paths[:6]
-        image_files = [os.path.basename(path) for path, mtime in latest_images]
-        print(f"[PanYolo] 🎬 开始对最新的 {len(image_files)} 张图片进行 YOLO 重新检测")
-        for i, image_file in enumerate(image_files):
-            image_path = os.path.join(save_folder, image_file)
-            frame = cv2.imread(image_path)
-            if frame is None:
-                print(f"[PanYolo] ❌ 无法读取图片: {image_path}")
-                continue
-            try:
-                results = self.model(frame, verbose=False)
-                annotated_frame = results[0].plot()
-                classes = results[0].boxes.cls.tolist() if results[0].boxes else []
-                class_names = [self.model.names[int(cls)] for cls in classes] if classes else []
-                print(f"[PanYolo] 图片 {image_file} 识别到的类别: {', '.join(class_names) if class_names else '无'}")
-                if class_names:
-                    self.boardcast.update_sound("shape", class_names[0])
-                output_path = os.path.join(output_folder, f"detected_{image_file}")
-                cv2.imwrite(output_path, annotated_frame)
-                print(f"[PanYolo] ✅ 保存检测结果为 {output_path}")
-            except Exception as e:
-                print(f"[PanYolo] 图片 {image_file} 检测失败: {e}")
-
-    def print_detection_stats(self, side, all_classes):
-        if not all_classes:
-            print(f"[PanYolo] [Stats] {side} 侧检测统计: 无检测到对象")
-            self.oled.update_display(f"{side} Stats", "No objects")
-            return
-        class_counter = Counter(all_classes)
-        stats_str = f"{side} 侧检测统计: {dict(class_counter)}"
-        print(f"[PanYolo] [Stats] {stats_str}")
-        most_common = class_counter.most_common(1)
-        if most_common:
-            most_common_class, max_count = most_common[0]
-            print(f"[PanYolo] [Stats] {side} 侧最多类别: {most_common_class} (出现 {max_count} 次)")
-            self.oled.update_display(f"{side} Stats", f"Most: {most_common_class} ({max_count})")
-        else:
-            self.oled.update_display(f"{side} Stats", "No dominant class")
-        self.boardcast.update_sound("stats", f"{side.lower()}_stats")
 
     def execute_detection_sequence(self):
         try:
@@ -689,14 +668,16 @@ class PanYolo:
                 self.oled.update_display(f"Left {shot}", f"Classes: {', '.join(classes) if classes else 'None'}")
                 left_classes.extend(classes)
                 time.sleep(0.5)
+
             if left_classes:
                 left_counter = Counter(left_classes)
                 most_common = left_counter.most_common(1)
                 if most_common:
                     most_common_class, max_count = most_common[0]
                     print(f"[PanYolo] Left 最多类别: {most_common_class} (出现 {max_count} 次)")
-                    self.boardcast.update_sound("person", most_common_class)
-                    self.oled.update_display("Left", f"Most: {most_common_class} ({max_count})")
+                    category, num = get_category_type(most_common_class)
+                    self.boardcast.update_sound(category, num)
+                    self.oled.update_display("Right", f"Most: {category} ({num})")
                 else:
                     print(f"[PanYolo] Left 统计失败，无有效类别")
                     self.oled.update_display("Left", "No dominant class")
@@ -707,6 +688,7 @@ class PanYolo:
             self.pan_right()
             time.sleep(1.0)
             self.clear_buffer(5)
+
             print("[PanYolo] 云台右转 - 连续捕获 3 张图片")
             for shot in range(1, 4):
                 print(f"[PanYolo] 右转 - 第 {shot} 张")
@@ -715,14 +697,17 @@ class PanYolo:
                 self.oled.update_display(f"Right {shot}", f"Classes: {', '.join(classes) if classes else 'None'}")
                 right_classes.extend(classes)
                 time.sleep(0.3)
+
             if right_classes:
                 right_counter = Counter(right_classes)
                 most_common = right_counter.most_common(1)
                 if most_common:
                     most_common_class, max_count = most_common[0]
                     print(f"[PanYolo] Right 最多类别: {most_common_class} (出现 {max_count} 次)")
-                    self.boardcast.update_sound("person", most_common_class)
-                    self.oled.update_display("Right", f"Most: {most_common_class} ({max_count})")
+
+                    category, num = get_category_type(most_common_class)
+                    self.boardcast.update_sound(category, num)
+                    self.oled.update_display("Right", f"Most: {category} ({num})")
                 else:
                     print(f"[PanYolo] Right 统计失败，无有效类别")
                     self.oled.update_display("Right", "No dominant class")
@@ -733,8 +718,8 @@ class PanYolo:
             self.pan_center()
             time.sleep(0.5)
             self.clear_buffer(3)
+
             print("[PanYolo] 云台居中")
-            self.oled.update_display("Center")
             print("[PanYolo] 序列完成")
             serial_comm.send_data("5|0|0")
 
@@ -751,9 +736,10 @@ if __name__ == "__main__":
     running_flag.set()
     try:
         serial_comm = SerialCommunication()
+        oled = Oled()
         serial_comm.connect()
         pan_yolo = PanYolo()
-        seri = Seri(serial_comm, pan_yolo.boardcast, pan_yolo)
+        seri = Seri(serial_comm, pan_yolo.boardcast, pan_yolo, oled)
         seri.test()  # 启动串口线程
         while running_flag.is_set():
             time.sleep(1)  # 主线程保持运行，等待串口指令
