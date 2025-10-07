@@ -68,14 +68,6 @@ def start_pigpiod():
         return False
 
 
-def get_category_type(class_id):
-    """根据类别ID返回播报类型"""
-    class_id = int(class_id)
-    if 1 <= class_id <= 10:
-        return "person", class_id  # 人物播报
-    elif 11 <= class_id <= 20:
-        return "weapon", class_id - 10  # 刀具播报
-    return None, None
 
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -591,6 +583,33 @@ class PanYolo:
         else:
             self.GPIO.output(self.pin_light, self.GPIO.LOW)
 
+    def get_category_type(self,class_id):
+        """根据类别ID返回播报类型"""
+        class_id = int(class_id)
+        if 1 <= class_id <= 10:
+            return "person", class_id  # 人物播报
+        elif 11 <= class_id <= 20:
+            return "weapon", class_id - 10  # 刀具播报
+        return None, None
+
+
+    def if_need(self,category,num):
+        needed_person = []
+        needed_weapon = []
+
+        if category == "person":
+            if num in needed_person:
+                return True
+            else:
+                return False
+        elif category == "weapon":
+            if num in needed_weapon:
+                return True
+            else:
+                return False
+
+
+
     def cleanup(self):
         if self._simulated:
             print("[PanYolo 模拟] 清理完成")
@@ -675,8 +694,14 @@ class PanYolo:
                 if most_common:
                     most_common_class, max_count = most_common[0]
                     print(f"[PanYolo] Left 最多类别: {most_common_class} (出现 {max_count} 次)")
-                    category, num = get_category_type(most_common_class)
+                    category, num = self.get_category_type(most_common_class)
                     self.boardcast.update_sound(category, num)
+
+                    ret =self.if_need(category, num)
+                    time.sleep(2)
+
+                    self.boardcast.update_sound(ret, category)
+
                     self.oled.update_display("Right", f"Most: {category} ({num})")
                 else:
                     print(f"[PanYolo] Left 统计失败，无有效类别")
@@ -705,8 +730,14 @@ class PanYolo:
                     most_common_class, max_count = most_common[0]
                     print(f"[PanYolo] Right 最多类别: {most_common_class} (出现 {max_count} 次)")
 
-                    category, num = get_category_type(most_common_class)
+                    category, num = self.get_category_type(most_common_class)
+
                     self.boardcast.update_sound(category, num)
+                    ret =self.if_need(category, num)
+                    time.sleep(2)
+
+                    self.boardcast.update_sound(ret, category)
+
                     self.oled.update_display("Right", f"Most: {category} ({num})")
                 else:
                     print(f"[PanYolo] Right 统计失败，无有效类别")
