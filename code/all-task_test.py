@@ -16,6 +16,8 @@ import pygame
 from luma.core.interface.serial import i2c
 from luma.core.render import canvas
 from luma.oled.device import ssd1306
+from PIL import ImageFont
+
 import signal
 import sys
 import pigpio
@@ -31,6 +33,8 @@ cast_event = threading.Event()
 id_data = None
 display_text = [None] * 4
 shutdown_flag = False
+detection_count = 0
+
 audio_queue = queue.Queue(maxsize=10)  # 新增：音频队列
 
 # 文件夹配置
@@ -68,13 +72,10 @@ def start_pigpiod():
         return False
 
 
-
-
 signal.signal(signal.SIGINT, signal_handler)
 
 # 条件导入 RPi.GPIO
 try:
-    import RPi.GPIO as GPIO
 
     if platform.system() == 'Linux':
         RPI_GPIO_AVAILABLE = True
@@ -90,22 +91,16 @@ def start_thread(name, target):
 
 
 def clear_folder(folder_path):
-    for filename in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, filename)
-        try:
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.unlink(file_path)
-            elif os.path.isdir(file_path):
-                shutil.rmtree(file_path)
-        except Exception as e:
-            print(f'删除 {file_path} 失败: {e}')
+    pass
 
 
-class Oled:
+class Oled:  ###ALL finished!!!!!
     def __init__(self):
         try:
             self.serial = i2c(port=1, address=0x3C)
             self.device = ssd1306(self.serial)
+            # 使用12px字体
+            self.font = ImageFont.truetype('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc', 12)
             self._real_hardware = True
             print("[Oled] 硬件初始化成功")
         except ImportError as e:
@@ -115,23 +110,37 @@ class Oled:
             print(f"[Oled] 硬件初始化失败（模拟模式）: {e}")
             self._real_hardware = False
 
-    def show_text(self, t1=None, t2=None, t3=None, t4=None, t5=None, t6=None):
+    def show_text(self, t1=None, t2=None, t3=None, t4=None):
         print(f"[Oled] show_text called with: {t1}, {t2}, {t3}, {t4}")
         if self._real_hardware:
             try:
                 with canvas(self.device) as draw:
+                    # 清屏
                     draw.rectangle(self.device.bounding_box, outline="white", fill="black")
-                    draw.text((10, 0), str(t1 or ""), fill="white")
-                    draw.text((10, 10), str(t2 or ""), fill="white")
-                    draw.text((10, 20), str(t3 or ""), fill="white")
-                    draw.text((10, 30), str(t4 or ""), fill="white")
-                    draw.text((10, 40), "status: running", fill="white")
-                    draw.text((10, 50), f"time: {time.strftime('%H:%M:%S')}", fill="white")
+
+                    # 获取字体高度
+                    bbox = self.font.getbbox("测")
+                    line_height = bbox[3] - bbox[1] + 1  # 减小行间距
+
+                    # 计算起始Y位置，使4行文本居中显示
+                    total_height = line_height * 4
+                    start_y = (self.device.height - total_height) // 2
+
+                    # 显示4行文本
+                    y_pos = start_y
+                    for text in [t1, t2, t3, t4]:
+                        if text:  # 只显示非空行
+                            # 限制每行显示的字符数
+                            max_chars = 10  # 根据屏幕宽度调整
+                            display_text = text[:max_chars] if len(text) > max_chars else text
+                            draw.text((5, y_pos), str(display_text), fill="white", font=self.font)
+                        y_pos += line_height
+
                 print("[Oled] 硬件显示成功")
             except Exception as e:
                 print(f"[Oled] 硬件显示失败: {e}")
         else:
-            print(f"[Oled] 模拟显示: {t1}, {t2}, {t3}, {t4}, status: running, time: {time.strftime('%H:%M:%S')}")
+            print(f"[Oled] 模拟显示: {t1}, {t2}, {t3}, {t4}")
         time.sleep(3)
 
     def turn_off_display(self):
@@ -140,7 +149,6 @@ class Oled:
         if self._real_hardware:
             try:
                 with canvas(self.device) as draw:
-                    # 用黑色填充整个屏幕，实现息屏效果
                     draw.rectangle(self.device.bounding_box, outline="black", fill="black")
                 print("[Oled] 硬件息屏成功")
             except Exception as e:
@@ -155,7 +163,7 @@ class Oled:
             if text_event.is_set():
                 current_text = display_text.copy()
                 print(f"[Oled] Thread processing display_text: {current_text}")
-                self.show_text(*current_text)
+                self.show_text(*current_text[:4])  # 取前4个元素
                 self.turn_off_display()
                 text_event.clear()
             time.sleep(0.1)
@@ -417,7 +425,7 @@ class Seri:
                     match = re.search(r'msg=@(\d)', id_data)
                     if match:
                         mapped_id = match.group(1)
-                        if mapped_id in {'1', '2', '3', '4', '5', '6', '7', '8', '9'}:
+                        if mapped_id in {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'}:
                             print(f"[Seri] ID 处理: 匹配到 {mapped_id}")
                             self.boardcast.update_sound("point", mapped_id)
                             self.oled.update_display("point", mapped_id)
@@ -448,7 +456,7 @@ class Seri:
 
 
 class PanYolo:
-    DEFAULT_ANGLE = 80
+    DEFAULT_ANGLE = 100
     _using_pigpio = False
 
     def __init__(self, model_path="/home/pi/Desktop/code/1989.pt"):
@@ -458,10 +466,7 @@ class PanYolo:
             return
 
         start_pigpiod()
-        if not start_pigpiod():
-            print("[PanYolo] pigpiod 启动失败，回退 RPi.GPIO")
-            self._init_rpi_gpio()
-            return
+
         try:
             self.pi = pigpio.pi()
             if not self.pi.connected:
@@ -478,8 +483,8 @@ class PanYolo:
             PanYolo._using_pigpio = True
             print("[PanYolo] pigpio 初始化完成（硬件PWM）")
         except Exception as e:
-            print(f"[PanYolo] pigpio失败，回退RPi.GPIO: {e}")
-            self._init_rpi_gpio()
+            # print(f"[PanYolo] pigpio失败，回退RPi.GPIO: {e}")
+            ...
 
         if not os.path.exists(model_path):
             print(f"❌ 模型文件 {model_path} 不存在")
@@ -583,33 +588,6 @@ class PanYolo:
         else:
             self.GPIO.output(self.pin_light, self.GPIO.LOW)
 
-    def get_category_type(self,class_id):
-        """根据类别ID返回播报类型"""
-        class_id = int(class_id)
-        if 1 <= class_id <= 10:
-            return "person", class_id  # 人物播报
-        elif 11 <= class_id <= 20:
-            return "weapon", class_id - 10  # 刀具播报
-        return None, None
-
-
-    def if_need(self,category,num):
-        needed_person = []
-        needed_weapon = []
-
-        if category == "person":
-            if num in needed_person:
-                return True
-            else:
-                return False
-        elif category == "weapon":
-            if num in needed_weapon:
-                return True
-            else:
-                return False
-
-
-
     def cleanup(self):
         if self._simulated:
             print("[PanYolo 模拟] 清理完成")
@@ -638,7 +616,31 @@ class PanYolo:
             self.cap.grab()
         print(f"[PanYolo] 已丢弃 {num_frames} 旧帧")
 
-    def yolo_detection(self, save_count, max_saves=6):
+    def get_category_type(self, class_id):
+        """根据类别ID返回播报类型"""
+        class_id = int(class_id)
+        if 1 <= class_id <= 10:
+            return "person", class_id  # 人物播报
+        elif 11 <= class_id <= 20:
+            return "weapon", class_id - 10  # 刀具播报
+        return None, None
+
+    def if_need(self, category, num):
+        needed_person = []
+        needed_weapon = []
+
+        if category == "person":
+            if num in needed_person:
+                return True
+            else:
+                return False
+        elif category == "weapon":
+            if num in needed_weapon:
+                return True
+            else:
+                return False
+
+    def yolo_detection(self, save_count, max_saves=6, save_folder=None):
         if save_count >= max_saves:
             return save_count, []
         self.clear_buffer(8)
@@ -660,7 +662,13 @@ class PanYolo:
         except Exception as e:
             print(f"[PanYolo] YOLO 检测失败: {e}")
             class_names = []
-        image_filename = os.path.join(save_folder, f"image_{int(time.time() * 1000)}.jpg")
+
+        # 使用传入的文件夹路径
+        if save_folder:
+            image_filename = os.path.join(save_folder, f"image_{int(time.time() * 1000)}.jpg")
+        else:
+            image_filename = os.path.join('saved_images', f"image_{int(time.time() * 1000)}.jpg")
+
         cv2.imwrite(image_filename, annotated_frame)
         save_count += 1
         print(f"[PanYolo] ✅ 保存画面为 {image_filename} ({save_count}/{max_saves})")
@@ -668,47 +676,57 @@ class PanYolo:
         return save_count, class_names
 
     def execute_detection_sequence(self):
+        global detection_count
         try:
-            clear_folder(save_folder)
-            print(f"[PanYolo] 已清空 {save_folder} 文件夹，开始新序列")
-            print("[PanYolo] 开始检测序列...")
+            # 增加检测计数
+            detection_count += 1
+
+            # 为本次检测创建专用文件夹
+            current_save_folder = os.path.join(save_folder, f"detection_{detection_count}")
+            if not os.path.exists(current_save_folder):
+                os.makedirs(current_save_folder)
+                print(f"[PanYolo] 创建新的检测文件夹: {current_save_folder}")
+
+            print(f"[PanYolo] 开始第 {detection_count} 次检测序列...")
             save_count = 0
             max_saves = 6
             left_classes = []
             right_classes = []
+
             self.pan_left()
             time.sleep(1.0)
             self.clear_buffer(5)
             print("[PanYolo] 云台左转 - 连续捕获 3 张图片")
+
             for shot in range(1, 4):
                 print(f"[PanYolo] 左转 - 第 {shot} 张")
-                save_count, classes = self.yolo_detection(save_count, max_saves)
+                save_count, classes = self.yolo_detection(save_count, max_saves, current_save_folder)
                 classes = classes if isinstance(classes, list) else []
-                self.oled.update_display(f"Left {shot}", f"Classes: {', '.join(classes) if classes else 'None'}")
+                self.oled.update_display(f"左侧{shot}", f"类别: {', '.join(classes) if classes else '无'}")
                 left_classes.extend(classes)
-                time.sleep(0.5)
+                time.sleep(0.3)
 
             if left_classes:
                 left_counter = Counter(left_classes)
                 most_common = left_counter.most_common(1)
                 if most_common:
                     most_common_class, max_count = most_common[0]
-                    print(f"[PanYolo] Left 最多类别: {most_common_class} (出现 {max_count} 次)")
+                    print(f"[PanYolo] 左侧最多类别: {most_common_class} (出现 {max_count} 次)")
                     category, num = self.get_category_type(most_common_class)
+
+                    # 播报检测结果
                     self.boardcast.update_sound(category, num)
-
-                    ret =self.if_need(category, num)
+                    ret = self.if_need(category, num)
                     time.sleep(2)
-
                     self.boardcast.update_sound(ret, category)
 
-                    self.oled.update_display("Right", f"Most: {category} ({num})")
+                    self.oled.update_display("左侧", f"最多: {category} ({num})")
                 else:
-                    print(f"[PanYolo] Left 统计失败，无有效类别")
-                    self.oled.update_display("Left", "No dominant class")
+                    print(f"[PanYolo] 左侧统计失败，无有效类别")
+                    self.oled.update_display("左侧", "无主要类别")
             else:
-                print(f"[PanYolo] Left 无检测到对象")
-                self.oled.update_display("Left", "No objects")
+                print(f"[PanYolo] 左侧无检测到对象")
+                self.oled.update_display("左侧", "无目标")
 
             self.pan_right()
             time.sleep(1.0)
@@ -717,9 +735,9 @@ class PanYolo:
             print("[PanYolo] 云台右转 - 连续捕获 3 张图片")
             for shot in range(1, 4):
                 print(f"[PanYolo] 右转 - 第 {shot} 张")
-                save_count, classes = self.yolo_detection(save_count, max_saves)
+                save_count, classes = self.yolo_detection(save_count, max_saves, current_save_folder)
                 classes = classes if isinstance(classes, list) else []
-                self.oled.update_display(f"Right {shot}", f"Classes: {', '.join(classes) if classes else 'None'}")
+                self.oled.update_display(f"右侧{shot}", f"类别: {', '.join(classes) if classes else '无'}")
                 right_classes.extend(classes)
                 time.sleep(0.3)
 
@@ -728,32 +746,44 @@ class PanYolo:
                 most_common = right_counter.most_common(1)
                 if most_common:
                     most_common_class, max_count = most_common[0]
-                    print(f"[PanYolo] Right 最多类别: {most_common_class} (出现 {max_count} 次)")
+                    print(f"[PanYolo] 右侧最多类别: {most_common_class} (出现 {max_count} 次)")
 
                     category, num = self.get_category_type(most_common_class)
 
+                    # 播报检测结果
                     self.boardcast.update_sound(category, num)
-                    ret =self.if_need(category, num)
+                    ret = self.if_need(category, num)
                     time.sleep(2)
-
                     self.boardcast.update_sound(ret, category)
 
-                    self.oled.update_display("Right", f"Most: {category} ({num})")
+                    self.oled.update_display("右侧", f"最多: {category} ({num})")
                 else:
-                    print(f"[PanYolo] Right 统计失败，无有效类别")
-                    self.oled.update_display("Right", "No dominant class")
+                    print(f"[PanYolo] 右侧统计失败，无有效类别")
+                    self.oled.update_display("右侧", "无主要类别")
             else:
-                print(f"[PanYolo] Right 无检测到对象")
-                self.oled.update_display("Right", "No objects")
+                print(f"[PanYolo] 右侧无检测到对象")
+                self.oled.update_display("右侧", "无目标")
 
             self.pan_center()
             time.sleep(0.5)
             self.clear_buffer(3)
 
             print("[PanYolo] 云台居中")
-            print("[PanYolo] 序列完成")
-            serial_comm.send_data("5|0|0")
+            print(f"[PanYolo] 第 {detection_count} 次检测序列完成")
 
+            # 保存检测结果到文件
+            result_file = os.path.join(current_save_folder, "detection_result.txt")
+            with open(result_file, "w", encoding="utf-8") as f:
+                f.write(f"检测次数: {detection_count}\n")
+                f.write(f"检测时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"左侧检测到: {', '.join(left_classes) if left_classes else '无'}\n")
+                f.write(f"右侧检测到: {', '.join(right_classes) if right_classes else '无'}\n")
+                if left_classes:
+                    f.write(f"左侧最多: {left_counter.most_common(1)[0]}\n")
+                if right_classes:
+                    f.write(f"右侧最多: {right_counter.most_common(1)[0]}\n")
+
+            serial_comm.send_data("5|0|0")
 
         except Exception as e:
             print(f"[PanYolo] 执行序列失败: {e}")
